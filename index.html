@@ -1,0 +1,161 @@
+
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<meta name="theme-color" content="#0b0e14">
+<title>GoldChart Pro</title>
+<script src="https://unpkg.com/lightweight-charts@4.2.2/dist/lightweight-charts.standalone.production.js"></script>
+<style>
+*{box-sizing:border-box}
+body{margin:0;background:#0b0e14;color:#e5eaf2;font-family:Arial}
+header{padding:17px;background:#111925;display:flex;justify-content:space-between;align-items:center}
+.logo{color:#e8bd59;font-size:21px;font-weight:bold}
+.status{font-size:11px;color:#13c784}
+main{padding:13px;max-width:1200px;margin:auto}
+.muted{font-size:12px;color:#8c9bad}
+.price{font-size:29px;font-weight:bold;margin:7px 0}
+.toolbar{display:flex;gap:6px;overflow-x:auto;padding:12px 0}
+button{flex-shrink:0;background:#192536;border:1px solid #29384c;color:white;padding:10px 14px;border-radius:6px}
+button.active{background:#d5ad52;color:#10141c}
+#chart{height:55vh;min-height:340px;width:100%}
+footer{font-size:11px;color:#77879a;padding:15px}
+</style>
+</head>
+<body>
+<header>
+<div class="logo">◆ GOLDCHART PRO</div>
+<div class="status" id="status">● Bağlanıyor</div>
+</header>
+<main>
+<div class="muted">MEXC · GOLD(XAU)USDT PERPETUAL</div>
+<div class="price" id="price">Yükleniyor...</div>
+<div class="toolbar" id="times">
+<button data-tf="Min1">1m</button>
+<button data-tf="Min5">5m</button>
+<button data-tf="Min15" class="active">15m</button>
+<button data-tf="Min30">30m</button>
+<button data-tf="Min60">1H</button>
+<button data-tf="Hour4">4H</button>
+<button data-tf="Day1">1D</button>
+</div>
+<div id="chart"></div>
+<div class="toolbar">
+<button id="ema20">EMA 20</button>
+<button id="ema50">EMA 50</button>
+<button id="reset">Grafiği sıfırla</button>
+</div>
+<footer>
+Canlı veriler MEXC Futures üzerinden alınır.
+Fiyat bağlantısı kesilirse sayfayı yenileyin.
+</footer>
+</main>
+<script>
+const API="https://contract.mexc.com";
+const WS="wss://contract.mexc.com/edge";
+const SYMBOL="XAU_USDT";
+const chart=LightweightCharts.createChart(
+document.getElementById("chart"),{
+layout:{background:{color:"#0b0e14"},textColor:"#aab5c5"},
+grid:{vertLines:{color:"#182331"},horzLines:{color:"#182331"}},
+rightPriceScale:{borderColor:"#293449"},
+timeScale:{timeVisible:true,borderColor:"#293449"},
+handleScroll:true,handleScale:true
+});
+const candles=chart.addCandlestickSeries({
+upColor:"#13c784",downColor:"#ea3943",
+borderUpColor:"#13c784",borderDownColor:"#ea3943",
+wickUpColor:"#13c784",wickDownColor:"#ea3943"
+});
+const volumes=chart.addHistogramSeries({
+priceScaleId:"volume",
+priceFormat:{type:"volume"},
+scaleMargins:{top:.83,bottom:0}
+});
+const line20=chart.addLineSeries({color:"#e9bd54",lineWidth:2});
+const line50=chart.addLineSeries({color:"#4d9cff",lineWidth:2});
+let bars=[],tf="Min15",ws=null,show20=false,show50=false;
+const status=document.getElementById("status");
+function price(p){
+document.getElementById("price").textContent=
+Number(p).toLocaleString("en-US",{minimumFractionDigits:2,maximumFractionDigits:3})+" USDT";
+}
+function ema(period){
+let result=[],prev=null,k=2/(period+1);
+bars.forEach((b,i)=>{
+prev=i===0?b.close:b.close*k+prev*(1-k);
+if(i>=period-1)result.push({time:b.time,value:prev});
+});
+return result;
+}
+function indicators(){
+line20.setData(show20?ema(20):[]);
+line50.setData(show50?ema(50):[]);
+}
+async function history(){
+status.textContent="● Mumlar yükleniyor";
+try{
+let r=await fetch(API+"/api/v1/contract/kline/"+SYMBOL+"?interval="+tf);
+let j=await r.json();
+if(!j.success)throw Error("API");
+let d=j.data;
+bars=d.time.map((t,i)=>({
+time:t,open:+d.open[i],high:+d.high[i],
+low:+d.low[i],close:+d.close[i],volume:+d.vol[i]
+}));
+candles.setData(bars);
+volumes.setData(bars.map(b=>({
+time:b.time,value:b.volume,
+color:b.close>=b.open?"#13c78455":"#ea394355"
+})));
+if(bars.length){price(bars[bars.length-1].close);chart.timeScale().fitContent();}
+indicators();
+}catch(e){status.textContent="● Veri alınamadı";console.log(e);}
+}
+function connect(){
+if(ws)ws.close();
+ws=new WebSocket(WS);
+ws.onopen=()=>{
+ws.send(JSON.stringify({
+method:"sub.kline",param:{symbol:SYMBOL,interval:tf}
+}));
+status.textContent="● Bağlandı";
+};
+ws.onmessage=e=>{
+try{
+let m=JSON.parse(e.data);
+if(m.channel!=="push.kline"||!m.data)return;
+let d=m.data;
+if(d.symbol!==SYMBOL)return;
+let b={time:d.t,open:+d.o,high:+d.h,low:+d.l,close:+d.c,volume:+d.q};
+if(!Number.isFinite(b.close))return;
+let last=bars[bars.length-1];
+if(last&&last.time===b.time)bars[bars.length-1]=b;
+else if(!last||b.time>last.time)bars.push(b);
+candles.update(b);
+volumes.update({time:b.time,value:b.volume,color:b.close>=b.open?"#13c78455":"#ea394355"});
+price(b.close);
+indicators();
+}catch(e){console.log(e);}
+};
+ws.onclose=()=>{status.textContent="● Yeniden bağlanıyor";setTimeout(connect,4000);};
+ws.onerror=()=>ws.close();
+}
+async function change(tf2){
+tf=tf2;
+document.querySelectorAll("[data-tf]").forEach(b=>b.classList.toggle("active",b.dataset.tf===tf));
+if(ws){ws.onclose=null;ws.close();ws=null;}
+bars=[];
+await history();
+connect();
+}
+document.querySelectorAll("[data-tf]").forEach(b=>b.onclick=()=>change(b.dataset.tf));
+document.getElementById("ema20").onclick=e=>{show20=!show20;e.target.classList.toggle("active",show20);indicators();};
+document.getElementById("ema50").onclick=e=>{show50=!show50;e.target.classList.toggle("active",show50);indicators();};
+document.getElementById("reset").onclick=()=>chart.timeScale().fitContent();
+window.addEventListener("resize",()=>chart.applyOptions({width:document.getElementById("chart").clientWidth}));
+history().then(connect);
+</script>
+</body>
+</html>
